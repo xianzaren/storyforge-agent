@@ -43,6 +43,19 @@ def main() -> int:
         action="store_true",
         help="Generate title cards instead of using uploaded assets whose filename/tags do not match a scene.",
     )
+    parser.add_argument(
+        "--subtitle-source",
+        choices=["generated_narration", "source_audio"],
+        default="generated_narration",
+        help="Generate subtitles from the topic or transcribe speech in an uploaded video.",
+    )
+    parser.add_argument(
+        "--audio-mode",
+        choices=["narration_replace", "source_original", "source_narration_mix"],
+        default="narration_replace",
+    )
+    parser.add_argument("--source-audio-volume", type=float, default=1.0)
+    parser.add_argument("--narration-volume", type=float, default=1.0)
     args = parser.parse_args()
     dimensions = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (1080, 1080)}
     width, height = dimensions[args.aspect_ratio]
@@ -62,6 +75,10 @@ def main() -> int:
         enable_scene_detection=not args.disable_scene_detection,
         scene_detection_threshold=args.scene_threshold,
         use_unmatched_assets=not args.strict_asset_matching,
+        subtitle_source=args.subtitle_source,
+        audio_mode=args.audio_mode,
+        source_audio_volume=max(0.0, args.source_audio_volume),
+        narration_volume=max(0.0, args.narration_volume),
     ), on_event=show).run(
         topic=args.topic, target_duration=args.duration, language=args.language
     )

@@ -33,10 +33,11 @@ class RunAudit:
         }
 
 
-REQUIRED_STEPS = ["script", "storyboard", "assets", "audio", "subtitles", "render", "quality"]
+REQUIRED_STEPS = ["media_analysis", "script", "storyboard", "assets", "audio", "subtitles", "render", "quality"]
 REQUIRED_FILES = [
     "state.json",
     "workflow_settings.json",
+    "media_analysis.json",
     "events.jsonl",
     "script.json",
     "storyboard.json",
@@ -170,6 +171,7 @@ def _audit_manifest(
     facts["video_scene_count"] = len(video_assignments)
     facts["selected_shot_ids"] = shot_ids
     facts["looped_scene_count"] = sum(bool(item.get("looped")) for item in assignments)
+    facts["source_audio_scene_count"] = sum(bool(item.get("source_audio_used")) for item in assignments)
     if require_video_assets and not video_assignments:
         issues.append(AuditIssue("video_assets", "No video asset was selected during the stage-two test"))
     if require_distinct_shots and len(set(shot_ids)) < require_distinct_shots:
@@ -179,8 +181,16 @@ def _audit_manifest(
             details={"required": require_distinct_shots, "selected": shot_ids},
         ))
     for item in video_assignments:
-        if item.get("source_has_audio") and not item.get("source_audio_ignored"):
-            issues.append(AuditIssue("source_audio", "A source video audio track was not marked as ignored", details={"scene_id": item.get("scene_id")}))
+        if (
+            item.get("source_has_audio")
+            and not item.get("source_audio_ignored")
+            and not item.get("source_audio_used")
+        ):
+            issues.append(AuditIssue(
+                "source_audio",
+                "A source video audio track is neither marked as used nor ignored",
+                details={"scene_id": item.get("scene_id")},
+            ))
 
 
 def _probe_video(path: Path, issues: list[AuditIssue]) -> dict[str, Any]:

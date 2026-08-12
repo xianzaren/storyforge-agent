@@ -411,18 +411,31 @@ class RenderTool:
         height: int,
         fit_mode: str = "pad",
         transition_seconds: float = 0.35,
+        audio_mode: str = "narration_replace",
+        source_audio_volume: float = 1.0,
+        narration_volume: float = 1.0,
     ) -> Path:
         if not scene.asset_path or not scene.audio_path:
             raise ValueError("Scene is missing asset or audio")
         require_binary("ffmpeg")
-        audio_duration = max(1.0, ffprobe_duration(Path(scene.audio_path)))
-        duration = max(scene.duration_seconds, audio_duration + 0.15)
+        using_source_only = audio_mode == "source_original" and scene.source_audio_used
+        audio_duration = (
+            scene.duration_seconds
+            if using_source_only
+            else max(1.0, ffprobe_duration(Path(scene.audio_path)))
+        )
+        duration = (
+            scene.duration_seconds
+            if using_source_only
+            else max(scene.duration_seconds, audio_duration + 0.15)
+        )
         scene.duration_seconds = duration
         asset_path = Path(scene.asset_path)
         is_video = scene.asset_type == "video" or asset_path.suffix.lower() in AssetTool.SUPPORTED_VIDEOS
         video_input: list[str]
         video_options: list[str] = []
         input_filters: list[str] = []
+        source_audio_needs_trim = False
         if is_video:
             source_duration = scene.asset_source_duration or ffprobe_duration(asset_path)
             scene.asset_source_duration = source_duration
@@ -440,6 +453,7 @@ class RenderTool:
                     f"loop=loop=-1:size={frame_count}:start=0",
                     "setpts=N/25/TB",
                 ]
+                source_audio_needs_trim = True
             else:
                 scene.asset_looped = False
                 slack = max(0.0, available_duration - duration)
@@ -455,9 +469,59 @@ class RenderTool:
             video_input = ["-loop", "1", "-i", str(asset_path)]
             video_options = ["-tune", "stillimage"]
 
+        selected_audio_mode = (
+            audio_mode
+            if is_video and scene.asset_has_audio and scene.source_audio_used
+            else "narration_replace"
+        )
+        audio_inputs: list[str] = []
+        audio_mapping: list[str]
+        audio_options: list[str]
+        fade_filter = self._audio_transition_filter(duration, transition_seconds)
+        if selected_audio_mode == "source_original":
+            source_filters = []
+            if source_audio_needs_trim:
+                source_filters.extend([
+                    f"atrim=start={scene.asset_segment_start_seconds:.3f}:duration={max(0.35, scene.asset_segment_duration or duration):.3f}",
+                    "asetpts=PTS-STARTPTS",
+                ])
+            source_filters.extend([
+                f"volume={max(0.0, source_audio_volume):.3f}",
+                "apad",
+                f"atrim=duration={duration:.3f}",
+            ])
+            if fade_filter:
+                source_filters.append(fade_filter)
+            audio_mapping = ["-map", "0:a:0"]
+            audio_options = ["-af", ",".join(source_filters)]
+        elif selected_audio_mode == "source_narration_mix":
+            audio_inputs = ["-i", scene.audio_path]
+            source_filters = []
+            if source_audio_needs_trim:
+                source_filters.extend([
+                    f"atrim=start={scene.asset_segment_start_seconds:.3f}:duration={max(0.35, scene.asset_segment_duration or duration):.3f}",
+                    "asetpts=PTS-STARTPTS",
+                ])
+            source_filters.extend([f"volume={max(0.0, source_audio_volume):.3f}", "apad"])
+            mixed_filters = (
+                f"[0:a]{','.join(source_filters)}[source];"
+                f"[1:a]volume={max(0.0, narration_volume):.3f},apad[narration];"
+                f"[source][narration]amix=inputs=2:duration=longest:normalize=0,"
+                f"atrim=duration={duration:.3f}"
+            )
+            if fade_filter:
+                mixed_filters += f",{fade_filter}"
+            mixed_filters += "[aout]"
+            audio_mapping = ["-map", "[aout]"]
+            audio_options = ["-filter_complex", mixed_filters]
+        else:
+            audio_inputs = ["-i", scene.audio_path]
+            audio_mapping = ["-map", "1:a:0"]
+            audio_options = self._audio_transition_options(duration, transition_seconds)
+
         run_command([
-            "ffmpeg", "-y", *video_input, "-i", scene.audio_path,
-            "-map", "0:v:0", "-map", "1:a:0",
+            "ffmpeg", "-y", *video_input, *audio_inputs,
+            "-map", "0:v:0", *audio_mapping,
             "-vf", self._visual_filter(
                 width,
                 height,
@@ -466,7 +530,7 @@ class RenderTool:
                 transition_seconds,
                 input_filters=input_filters,
             ),
-            *self._audio_transition_options(duration, transition_seconds),
+            *audio_options,
             "-c:v", "libx264", "-preset", "veryfast", *video_options,
             "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}", str(output_path),
         ])
@@ -503,16 +567,20 @@ class RenderTool:
 
     @staticmethod
     def _audio_transition_options(duration: float, transition_seconds: float) -> list[str]:
+        value = RenderTool._audio_transition_filter(duration, transition_seconds)
+        if not value:
+            return []
+        return ["-af", value]
+
+    @staticmethod
+    def _audio_transition_filter(duration: float, transition_seconds: float) -> str:
         fade_duration = min(max(0.0, transition_seconds), max(0.0, duration / 3))
         if fade_duration <= 0:
-            return []
-        return [
-            "-af",
-            (
-                f"afade=t=in:st=0:d={fade_duration:.3f},"
-                f"afade=t=out:st={max(0.0, duration - fade_duration):.3f}:d={fade_duration:.3f}"
-            ),
-        ]
+            return ""
+        return (
+            f"afade=t=in:st=0:d={fade_duration:.3f},"
+            f"afade=t=out:st={max(0.0, duration - fade_duration):.3f}:d={fade_duration:.3f}"
+        )
 
     def concatenate(self, clips: list[Path], output_path: Path) -> Path:
         if not clips:

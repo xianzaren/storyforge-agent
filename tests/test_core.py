@@ -4,12 +4,55 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from storyforge.media import MediaAnalysis, MediaAnalysisTool, TranscriptNLPTool, TranscriptSegment
 from storyforge.models import ProjectState, Scene
 from storyforge.tools import AssetRecord, AssetTool, RenderTool, ScriptTool, StoryboardTool, SubtitleTool
 from storyforge.workflow import WorkflowAgent, WorkflowConfig
 
 
 class CoreTests(unittest.TestCase):
+    def test_transcript_nlp_removes_fillers_and_immediate_repetition(self) -> None:
+        self.assertEqual(
+            TranscriptNLPTool.clean("Um, this this is the result"),
+            "this is the result",
+        )
+        self.assertEqual(TranscriptNLPTool.clean("嗯，今天 今天开始"), "今天开始")
+
+    def test_transcript_segments_become_timeline_locked_scenes(self) -> None:
+        analysis = MediaAnalysis(
+            path="source.mp4",
+            duration_seconds=8,
+            width=640,
+            height=360,
+            has_audio=True,
+            transcription_provider="fake",
+            transcript_segments=[
+                TranscriptSegment(1.0, 3.0, "First sentence"),
+                TranscriptSegment(4.0, 7.0, "Second sentence"),
+            ],
+        )
+        scenes = MediaAnalysisTool.transcript_scenes([analysis], target_duration=5, language="en")
+        self.assertEqual([scene.narration for scene in scenes], ["First sentence", "Second sentence"])
+        self.assertEqual(scenes[0].transcript_start_seconds, 1.0)
+        self.assertEqual(scenes[1].transcript_end_seconds, 7.0)
+        self.assertTrue(all(scene.subtitle_source == "source_transcript" for scene in scenes))
+
+    def test_long_transcript_is_split_into_readable_timed_captions(self) -> None:
+        source = TranscriptSegment(
+            2.0,
+            12.0,
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+        )
+        captions = TranscriptNLPTool.caption_segments([source], max_words=5)
+        self.assertEqual(len(captions), 3)
+        self.assertEqual(captions[0].start_seconds, 2.0)
+        self.assertEqual(captions[-1].end_seconds, 12.0)
+        self.assertTrue(all(len(item.text.split()) <= 5 for item in captions))
+        self.assertTrue(all(
+            first.end_seconds == second.start_seconds
+            for first, second in zip(captions, captions[1:])
+        ))
+
     def test_fallback_script_is_structured(self) -> None:
         scenes = ScriptTool().run("AI for creators", 24, "en")
         self.assertGreaterEqual(len(scenes), 3)

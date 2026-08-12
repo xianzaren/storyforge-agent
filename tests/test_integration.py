@@ -9,11 +9,21 @@ from pathlib import Path
 from PIL import Image
 
 from storyforge import WorkflowAgent, WorkflowConfig
+from storyforge.media import MediaAnalysisTool, TranscriptSegment
+from storyforge.models import Scene
+from storyforge.tools import RenderTool
 from storyforge.utils import run_command
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is not available")
 class WorkflowIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _fake_transcriber(path: Path, language: str):
+        return ([
+            TranscriptSegment(0.0, 1.8, "The uploaded video provides this sentence."),
+            TranscriptSegment(2.0, 3.8, "Its original audio remains synchronized."),
+        ], "en", "fake-whisper")
+
     def test_offline_workflow_generates_subtitled_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = WorkflowAgent(WorkflowConfig(
@@ -143,6 +153,75 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 list(range(len(state.scenes))),
             )
             self.assertTrue(any("shorter" in warning for warning in state.warnings))
+
+    def test_source_transcript_and_original_audio_are_preserved_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets_dir = root / "assets"
+            assets_dir.mkdir()
+            video_path = assets_dir / "spoken_source.mp4"
+            run_command([
+                "ffmpeg", "-y", "-f", "lavfi", "-i",
+                "testsrc2=size=320x180:rate=25:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=550:duration=4", "-shortest",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(video_path),
+            ])
+            agent = WorkflowAgent(WorkflowConfig(
+                runs_dir=root / "runs",
+                assets_dir=assets_dir,
+                width=640,
+                height=360,
+                enable_scene_detection=False,
+                subtitle_source="source_audio",
+                audio_mode="source_original",
+            ))
+            agent.media_tool = MediaAnalysisTool(self._fake_transcriber)
+            state = agent.run("ignored when transcript succeeds", target_duration=4, language="en")
+
+            self.assertIn(state.status, {"completed", "completed_with_warnings"})
+            self.assertEqual(state.artifacts["script_provider"], "source-transcript")
+            self.assertEqual(state.artifacts["transcription_provider"], "fake-whisper")
+            self.assertEqual(state.artifacts["tts_providers"], "source-original")
+            self.assertTrue(all(scene.source_audio_used for scene in state.scenes))
+            self.assertTrue(all(not scene.asset_looped for scene in state.scenes))
+            self.assertTrue(all(scene.subtitle_source == "source_transcript" for scene in state.scenes))
+            subtitles = Path(state.artifacts["subtitles"]).read_text(encoding="utf-8")
+            self.assertIn("uploaded video provides", subtitles)
+            manifest = json.loads(Path(state.artifacts["assets_manifest"]).read_text(encoding="utf-8"))
+            self.assertTrue(all(item["source_audio_used"] for item in manifest["assignments"]))
+            self.assertTrue(all(not item["source_audio_ignored"] for item in manifest["assignments"]))
+            self.assertEqual(state.artifacts["quality_passed"], "true")
+
+    def test_source_and_generated_narration_mix_has_audio_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            narration = root / "narration.wav"
+            output = root / "mixed.mp4"
+            run_command([
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=3",
+                "-f", "lavfi", "-i", "sine=frequency=330:duration=3", "-shortest",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
+            ])
+            run_command([
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=2",
+                str(narration),
+            ])
+            scene = Scene(
+                1, "Mix", "Narration", "mix", "Mix", 2,
+                asset_path=str(source), audio_path=str(narration), asset_type="video",
+                asset_source_duration=3, asset_segment_duration=3, asset_has_audio=True,
+                source_audio_used=True, audio_mode="source_narration_mix",
+            )
+            RenderTool().render_scene(
+                scene, output, 640, 360,
+                audio_mode="source_narration_mix", source_audio_volume=0.25, narration_volume=1.0,
+            )
+            probe = run_command([
+                "ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(output),
+            ])
+            stream_types = {item["codec_type"] for item in json.loads(probe.stdout)["streams"]}
+            self.assertEqual(stream_types, {"video", "audio"})
 
 
 if __name__ == "__main__":

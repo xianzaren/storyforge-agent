@@ -19,6 +19,37 @@ with st.sidebar:
     language = st.selectbox("语言", ["en", "zh"])
     aspect_ratio = st.selectbox("画面比例", ["16:9 横屏", "9:16 竖屏", "1:1 方形"])
     fit_mode = st.selectbox("素材适配", ["pad", "crop"], format_func=lambda item: "完整留边" if item == "pad" else "铺满裁剪")
+    subtitle_source = st.selectbox(
+        "字幕来源",
+        ["generated_narration", "source_audio"],
+        format_func=lambda item: "根据主题生成" if item == "generated_narration" else "识别上传视频原声",
+        help="原声识别需要安装 faster-whisper；不可用或视频没有语音时会明确降级到主题脚本。",
+    )
+    audio_mode = st.selectbox(
+        "成片音轨",
+        ["narration_replace", "source_original", "source_narration_mix"],
+        format_func=lambda item: {
+            "narration_replace": "AI 配音替换原声",
+            "source_original": "保留原音轨",
+            "source_narration_mix": "原声 + AI 配音混合",
+        }[item],
+    )
+    source_audio_volume = st.slider(
+        "原声音量",
+        0.0,
+        2.0,
+        1.0 if audio_mode == "source_original" else 0.3,
+        0.05,
+        disabled=audio_mode == "narration_replace",
+    )
+    narration_volume = st.slider(
+        "AI 配音音量",
+        0.0,
+        2.0,
+        1.0,
+        0.05,
+        disabled=audio_mode == "source_original",
+    )
     transition_seconds = st.slider("淡入淡出（秒）", 0.0, 1.0, 0.35, 0.05)
     enable_scene_detection = st.checkbox("自动镜头检测", value=True)
     scene_threshold = st.slider("镜头变化阈值", 0.1, 0.8, 0.35, 0.05, disabled=not enable_scene_detection)
@@ -67,6 +98,10 @@ if st.button("生成视频", type="primary", use_container_width=True):
             enable_scene_detection=enable_scene_detection,
             scene_detection_threshold=scene_threshold,
             use_unmatched_assets=use_unmatched_assets,
+            subtitle_source=subtitle_source,
+            audio_mode=audio_mode,
+            source_audio_volume=source_audio_volume,
+            narration_volume=narration_volume,
         ), on_event=on_event)
         state = agent.run(topic=topic, target_duration=duration, language=language)
 
@@ -89,6 +124,11 @@ if st.button("生成视频", type="primary", use_container_width=True):
             st.download_button("下载 MP4", video_path.read_bytes(), file_name=f"{state.task_id}.mp4", mime="video/mp4")
         with right:
             if uploads:
+                st.subheader("媒体理解")
+                st.caption(
+                    f"脚本来源：{state.artifacts.get('script_provider', 'unknown')} · "
+                    f"转写引擎：{state.artifacts.get('transcription_provider', 'none')}"
+                )
                 st.subheader("素材采用情况")
                 st.dataframe(
                     [{
@@ -100,6 +140,9 @@ if st.button("生成视频", type="primary", use_container_width=True):
                         "镜头": scene.asset_shot_index,
                         "取片起点": round(scene.asset_start_seconds, 2),
                         "循环": scene.asset_looped,
+                        "音轨": scene.audio_mode,
+                        "保留原声": scene.source_audio_used,
+                        "字幕来源": scene.subtitle_source,
                     } for scene in state.scenes],
                     use_container_width=True,
                     hide_index=True,

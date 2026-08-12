@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from storyforge import WorkflowAgent, WorkflowConfig
+from storyforge.media import MediaAnalysisTool, TranscriptSegment
 from storyforge.tools import ScriptTool
 from storyforge.utils import run_command
 from storyforge.validation import RunAudit, audit_run
@@ -285,9 +286,9 @@ def streamlit_acceptance() -> dict[str, Any]:
     app.selectbox[0].select(app.selectbox[0].options[0])
     app.selectbox[1].select(app.selectbox[1].options[1])
     app.selectbox[2].select(app.selectbox[2].options[1])
-    app.slider[1].set_value(0.2)
+    app.slider[3].set_value(0.2)
     app.checkbox[0].check()
-    app.slider[2].set_value(0.25)
+    app.slider[4].set_value(0.25)
     app.button[0].click()
     app.run(timeout=120)
     errors = [item.value for item in app.error]
@@ -303,6 +304,61 @@ def streamlit_acceptance() -> dict[str, Any]:
     if not audit.passed:
         raise RuntimeError("Streamlit artifact audit failed: " + "; ".join(issue.message for issue in audit.issues))
     return {"run_dir": str(candidates[0]), "audit": audit.to_dict()}
+
+
+def stage_three_acceptance(result_dir: Path) -> dict[str, Any]:
+    assets_dir = result_dir / "stage3_assets"
+    runs_dir = result_dir / "stage3_runs"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    source_video = assets_dir / "source_speech_demo.mp4"
+    run_command([
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=4",
+        "-f", "lavfi", "-i", "sine=frequency=550:duration=4", "-shortest",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source_video),
+    ])
+
+    def deterministic_transcriber(path: Path, language: str):
+        return ([
+            TranscriptSegment(0.0, 1.8, "This subtitle came from the uploaded source audio."),
+            TranscriptSegment(2.0, 3.8, "The original audio track is preserved in the result."),
+        ], "en", "stage3-test-transcriber")
+
+    agent = WorkflowAgent(WorkflowConfig(
+        runs_dir=runs_dir,
+        assets_dir=assets_dir,
+        width=640,
+        height=360,
+        enable_scene_detection=False,
+        subtitle_source="source_audio",
+        audio_mode="source_original",
+    ))
+    agent.media_tool = MediaAnalysisTool(deterministic_transcriber)
+    state = agent.run("Stage three source understanding", target_duration=4, language="en")
+    run_dir = runs_dir / state.task_id
+    audit = audit_run(run_dir, expected_width=640, expected_height=360, require_video_assets=True)
+    manifest = json.loads((run_dir / "assets_manifest.json").read_text(encoding="utf-8"))
+    assignments = manifest.get("assignments", [])
+    subtitles = (run_dir / "subtitles.srt").read_text(encoding="utf-8")
+    if state.artifacts.get("script_provider") != "source-transcript":
+        raise RuntimeError("Stage-three script was not generated from the source transcript")
+    if not assignments or not all(item.get("source_audio_used") for item in assignments):
+        raise RuntimeError("Stage-three output did not preserve the uploaded source audio")
+    if "uploaded source audio" not in subtitles:
+        raise RuntimeError("Stage-three subtitles do not contain the transcribed source speech")
+    if not audit.passed:
+        raise RuntimeError("Stage-three artifact audit failed: " + "; ".join(issue.message for issue in audit.issues))
+    result = {
+        "run_dir": str(run_dir),
+        "video": str(run_dir / "final.mp4"),
+        "script_provider": state.artifacts.get("script_provider"),
+        "transcription_provider": state.artifacts.get("transcription_provider"),
+        "source_audio_scenes": sum(bool(item.get("source_audio_used")) for item in assignments),
+        "audit": audit.to_dict(),
+    }
+    (result_dir / "stage3_audit.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return result
 
 
 def live_llm_test() -> dict[str, Any]:
@@ -342,6 +398,12 @@ def main() -> int:
             "stage2",
             "Stage-two multi-shot vertical video acceptance",
             lambda: stage_two_acceptance(workflow.result_dir),
+            "python test.py build",
+        )
+        workflow.run_stage(
+            "stage3",
+            "Stage-three transcription and original-audio acceptance",
+            lambda: stage_three_acceptance(workflow.result_dir),
             "python test.py build",
         )
         workflow.run_stage("streamlit", "Streamlit interactive generation", streamlit_acceptance, "python test.py build")

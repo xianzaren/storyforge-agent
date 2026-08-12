@@ -2,4 +2,5 @@ Pillow>=10.0
 streamlit>=1.35
 # Optional for natural multilingual TTS:
 # edge-tts>=6.1
-
+# Optional for local speech recognition from uploaded videos:
+# faster-whisper>=1.1

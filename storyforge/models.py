@@ -30,6 +30,12 @@ class Scene:
     asset_looped: bool = False
     asset_selection_reason: str | None = None
     asset_reuse_index: int = 0
+    source_media_path: str | None = None
+    transcript_start_seconds: float | None = None
+    transcript_end_seconds: float | None = None
+    subtitle_source: str = "generated_narration"
+    audio_mode: str = "narration_replace"
+    source_audio_used: bool = False
 
 
 @dataclass

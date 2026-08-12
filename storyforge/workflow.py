@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .media import MediaAnalysis, MediaAnalysisTool
 from .models import ProjectState, Scene
 from .tools import AssetTool, QualityTool, RenderTool, ScriptTool, StoryboardTool, SubtitleTool, TTSTool
 from .utils import ffprobe_duration, slugify, write_json
@@ -25,12 +26,22 @@ class WorkflowConfig:
     fit_mode: str = "pad"
     transition_seconds: float = 0.35
     use_unmatched_assets: bool = True
+    subtitle_source: str = "generated_narration"
+    audio_mode: str = "narration_replace"
+    source_audio_volume: float = 1.0
+    narration_volume: float = 1.0
 
 
 class WorkflowAgent:
     def __init__(self, config: WorkflowConfig | None = None, on_event: Callable[[str, dict], None] | None = None) -> None:
         self.config = config or WorkflowConfig()
         self.on_event = on_event
+        if self.config.subtitle_source not in {"generated_narration", "source_audio"}:
+            raise ValueError("subtitle_source must be generated_narration or source_audio")
+        if self.config.audio_mode not in {"narration_replace", "source_original", "source_narration_mix"}:
+            raise ValueError("Unsupported audio_mode")
+        self.media_tool = MediaAnalysisTool()
+        self.media_analyses: list[MediaAnalysis] = []
         self.script_tool = ScriptTool()
         self.storyboard_tool = StoryboardTool()
         self.asset_tool = AssetTool(
@@ -63,10 +74,15 @@ class WorkflowAgent:
             "max_video_segments": self.config.max_video_segments,
             "max_retries": self.config.max_retries,
             "use_unmatched_assets": self.config.use_unmatched_assets,
+            "subtitle_source": self.config.subtitle_source,
+            "audio_mode": self.config.audio_mode,
+            "source_audio_volume": self.config.source_audio_volume,
+            "narration_volume": self.config.narration_volume,
         })
         state.artifacts["workflow_settings"] = str(settings_path)
 
         try:
+            self._step(state, run_dir, "media_analysis", lambda: self._analyze_media(state, run_dir))
             self._step(state, run_dir, "script", lambda: self._create_script(state, run_dir))
             self._step(state, run_dir, "storyboard", lambda: self._create_storyboard(state, run_dir))
             self._step(state, run_dir, "assets", lambda: self._resolve_assets(state, run_dir))
@@ -88,6 +104,34 @@ class WorkflowAgent:
         finally:
             state.save(run_dir / "state.json")
         return state
+
+    def _analyze_media(self, state: ProjectState, run_dir: Path) -> None:
+        transcription_requested = self.config.subtitle_source == "source_audio"
+        self.media_analyses = self.media_tool.run(
+            self.config.assets_dir,
+            language=state.language,
+            transcribe=transcription_requested,
+        )
+        manifest_path = self.media_tool.write_manifest(run_dir / "media_analysis.json", self.media_analyses)
+        state.artifacts["media_analysis"] = str(manifest_path)
+        transcript_segments = sum(len(item.transcript_segments) for item in self.media_analyses)
+        state.artifacts["transcription_provider"] = ",".join(sorted({
+            item.transcription_provider for item in self.media_analyses
+        })) or "none"
+        self._event(run_dir, "media_analyzed", {
+            "video_count": len(self.media_analyses),
+            "audio_video_count": sum(item.has_audio for item in self.media_analyses),
+            "transcript_segments": transcript_segments,
+            "transcription_requested": transcription_requested,
+        })
+        if transcription_requested and not transcript_segments:
+            errors = [item.transcription_error for item in self.media_analyses if item.transcription_error]
+            reason = errors[0] if errors else "No uploaded video with recognisable speech was found."
+            state.warnings.append(
+                "Source-audio subtitles were requested but transcription was unavailable; "
+                f"the workflow will use the topic script instead. {reason}"
+            )
+            self._event(run_dir, "transcription_fallback", {"reason": reason})
 
     def _step(self, state: ProjectState, run_dir: Path, name: str, action: Callable[[], None]) -> None:
         for attempt in range(self.config.max_retries + 1):
@@ -120,16 +164,28 @@ class WorkflowAgent:
             return
 
     def _create_script(self, state: ProjectState, run_dir: Path) -> None:
-        state.scenes = self.script_tool.run(state.topic, state.target_duration, state.language)
+        transcript_scenes = []
+        if self.config.subtitle_source == "source_audio":
+            transcript_scenes = self.media_tool.transcript_scenes(
+                self.media_analyses,
+                target_duration=state.target_duration,
+                language=state.language,
+            )
+        if transcript_scenes:
+            state.scenes = transcript_scenes
+            provider = "source-transcript"
+        else:
+            state.scenes = self.script_tool.run(state.topic, state.target_duration, state.language)
+            provider = self.script_tool.last_provider
         path = run_dir / "script.json"
         write_json(path, {
             "topic": state.topic,
-            "provider": self.script_tool.last_provider,
+            "provider": provider,
             "scenes": [scene.__dict__ for scene in state.scenes],
         })
         state.artifacts["script"] = str(path)
-        state.artifacts["script_provider"] = self.script_tool.last_provider
-        if self.script_tool.last_error:
+        state.artifacts["script_provider"] = provider
+        if not transcript_scenes and self.script_tool.last_error:
             warning = f"LLM generation failed; template fallback was used. {self.script_tool.last_error}"
             state.warnings.append(warning)
             self._event(run_dir, "model_fallback", {"reason": self.script_tool.last_error})
@@ -173,6 +229,29 @@ class WorkflowAgent:
         used_assets: set[str] = set()
         asset_usage_counts: dict[str, int] = {}
         for scene in state.scenes:
+            if scene.source_media_path and scene.transcript_start_seconds is not None:
+                source_path = Path(scene.source_media_path)
+                source_record = next((record for record in records if record.path.resolve() == source_path.resolve()), None)
+                if source_record:
+                    scene.asset_path = str(source_path)
+                    scene.asset_type = "video"
+                    scene.asset_source_duration = source_record.source_duration_seconds or source_record.duration_seconds
+                    scene.asset_segment_start_seconds = scene.transcript_start_seconds
+                    scene.asset_segment_duration = max(
+                        0.35,
+                        (scene.transcript_end_seconds or scene.transcript_start_seconds + scene.duration_seconds)
+                        - scene.transcript_start_seconds,
+                    )
+                    scene.asset_shot_index = None
+                    scene.asset_width = source_record.width
+                    scene.asset_height = source_record.height
+                    scene.asset_has_audio = source_record.has_audio
+                    scene.asset_match_score = 1
+                    scene.asset_generated = False
+                    scene.asset_selection_reason = "source_transcript_timeline"
+                    scene.asset_reuse_index = asset_usage_counts.get(str(source_path.resolve()), 0)
+                    asset_usage_counts[str(source_path.resolve())] = scene.asset_reuse_index + 1
+                    continue
             path, generated = self.asset_tool.match_or_create(
                 scene,
                 records,
@@ -208,16 +287,35 @@ class WorkflowAgent:
         providers = []
         manifest = []
         for scene in state.scenes:
-            audio_path = run_dir / "audio" / f"scene_{scene.scene_id:02}.wav"
-            actual_path, provider = self.tts_tool.run(scene.narration, audio_path, state.language, scene.duration_seconds)
-            scene.audio_path = str(actual_path)
-            scene.duration_seconds = max(scene.duration_seconds, ffprobe_duration(actual_path) + 0.15)
+            scene.audio_mode = self.config.audio_mode
+            can_use_source = scene.asset_type == "video" and scene.asset_has_audio and scene.asset_path
+            if self.config.audio_mode == "source_original" and can_use_source:
+                actual_path = Path(scene.asset_path or "")
+                provider = "source-original"
+                scene.audio_path = str(actual_path)
+                scene.source_audio_used = True
+            else:
+                audio_path = run_dir / "audio" / f"scene_{scene.scene_id:02}.wav"
+                actual_path, provider = self.tts_tool.run(
+                    scene.narration, audio_path, state.language, scene.duration_seconds
+                )
+                scene.audio_path = str(actual_path)
+                scene.duration_seconds = max(scene.duration_seconds, ffprobe_duration(actual_path) + 0.15)
+                scene.source_audio_used = bool(
+                    self.config.audio_mode == "source_narration_mix" and can_use_source
+                )
+                if self.config.audio_mode == "source_original" and not can_use_source:
+                    warning = f"Scene {scene.scene_id} has no usable source audio; generated narration was used."
+                    state.warnings.append(warning)
+                    self._event(run_dir, "source_audio_fallback", {"scene_id": scene.scene_id})
             providers.append(provider)
             manifest.append({
                 "scene_id": scene.scene_id,
                 "provider": provider,
                 "audio_path": str(actual_path),
                 "duration_seconds": scene.duration_seconds,
+                "audio_mode": scene.audio_mode,
+                "source_audio_used": scene.source_audio_used,
             })
         manifest_path = run_dir / "tts_manifest.json"
         write_json(manifest_path, {"scenes": manifest})
@@ -241,6 +339,9 @@ class WorkflowAgent:
                 self.config.height,
                 fit_mode=self.config.fit_mode,
                 transition_seconds=self.config.transition_seconds,
+                audio_mode=scene.audio_mode,
+                source_audio_volume=self.config.source_audio_volume,
+                narration_volume=self.config.narration_volume,
             )
             scene.clip_path = str(path)
             clips.append(path)
@@ -273,7 +374,12 @@ class WorkflowAgent:
             "source_width": scene.asset_width,
             "source_height": scene.asset_height,
             "source_has_audio": scene.asset_has_audio,
-            "source_audio_ignored": scene.asset_type == "video" and scene.asset_has_audio,
+            "source_audio_ignored": scene.asset_type == "video" and scene.asset_has_audio and not scene.source_audio_used,
+            "source_audio_used": scene.source_audio_used,
+            "audio_mode": scene.audio_mode,
+            "subtitle_source": scene.subtitle_source,
+            "transcript_start_seconds": scene.transcript_start_seconds,
+            "transcript_end_seconds": scene.transcript_end_seconds,
             "trim_start_seconds": round(scene.asset_start_seconds, 3),
             "output_duration_seconds": round(scene.duration_seconds, 3),
             "looped": scene.asset_looped,
