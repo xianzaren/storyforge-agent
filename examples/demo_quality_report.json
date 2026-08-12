@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "checks": {
+    "video_exists": true,
+    "all_scenes_have_assets": true,
+    "duration_within_tolerance": true
+  },
+  "expected_duration_seconds": 16.307,
+  "actual_duration_seconds": 16.303,
+  "duration_delta_seconds": 0.004,
+  "missing_asset_scene_ids": []
+}

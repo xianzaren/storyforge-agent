@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import json
+import os
+import urllib.request
+from typing import Any
+
+
+class CompatibleLLMClient:
+    """Small OpenAI-compatible client using only the Python standard library."""
+
+    def __init__(self) -> None:
+        self.api_key = os.getenv("STORYFORGE_API_KEY", "")
+        self.base_url = os.getenv("STORYFORGE_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.model = os.getenv("STORYFORGE_MODEL", "")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key and self.model)
+
+    def generate_json(self, system: str, user: str, timeout: int = 90) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError("LLM client is not configured")
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0.4,
+            "response_format": {"type": "json_object"},
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        return json.loads(content)
+
