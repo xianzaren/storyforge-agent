@@ -1,9 +1,26 @@
 # StoryForge Agent
 
-一个面向短视频创作的可运行 AI Agent MVP。它把“主题”转成结构化脚本和分镜，匹配本地图片或视频素材，生成配音与字幕，通过 FFmpeg 合成带硬字幕的视频，并对失败步骤自动重试、对输出执行质量检查。
+一个可本地运行的 **AI 视频素材分析与前期标注助手**。它帮助用户理解长视频、自动切片、聚类相似镜头、对齐原声文本，并给出带证据的内容/情绪/高光建议；用户复核标签、选择片段后再导出。原有“主题 → 自动成片”能力作为第二页面保留，但不再是项目的主要定位。
+
+> 核心原则：不根据用户输入主题覆盖原视频语义；无语音或视觉模型证据时，明确标记为“待人工确认”，不会生成与素材无关的字幕。
+
+## 首选工作流：分析与标注长视频
+
+```powershell
+streamlit run app.py
+
+# 或使用 CLI；下面这条完全离线且不进行语音转写
+python analyze.py .\my-video.mp4 --no-transcribe
+```
+
+首页支持上传单个视频、调节切镜/聚类阈值、查看镜头缩略图、筛选相似镜头组、编辑内容与情绪标签、勾选片段、导出选中片段 MP4，并下载 `analysis.json`、`segments.csv` 和只来自原声识别的 `transcript.srt`。详细流程、字段解释和可选视觉模型接入见 [分析与标注工作流](docs/analysis-workflow.md)。
 
 ## 这个项目展示什么
 
+- 分析优先：不直接替用户做剪辑决定，先提供镜头级证据和可编辑标注。
+- 自动切片与聚类：FFmpeg 检测转场，Pillow/NumPy 提取局部视觉特征并聚类重复或相似画面。
+- 多模态线索：组合原声转写、音频能量、画面变化与可选视觉模型，输出情绪和高光建议。
+- 音频辅助切片：用滑动窗口分析能量、频谱、过零率和转写文本情绪；持续变化可新增切点，瞬时尖峰由持久性规则过滤。
 - Agent / Tool / Workflow 分层：编排器只负责状态推进，具体能力由工具实现。
 - 结构化输出：脚本和分镜保存为 JSON，便于检查、修改和复现。
 - 智能剪辑基础：自动检测视频镜头，将长视频拆成镜头候选，并优先选择尚未使用的匹配镜头。
@@ -81,7 +98,7 @@ python cli.py --topic "上传视频重配音" --assets-dir my_videos \
 streamlit run app.py
 ```
 
-浏览器打开 `http://localhost:8501`。输入主题、上传可选素材并选择字幕与音轨模式，点击“生成视频”后即可预览和下载 MP4。
+浏览器打开 `http://localhost:8501`。首页是素材分析与人工复核工作台；左侧“自动成片”页面保留原有主题驱动生成能力。
 
 ## 输入与输出示例
 
@@ -232,7 +249,7 @@ python cli.py --topic "三十秒了解多模态模型" --language zh
 # 环境预检 + 快速核心测试
 .\.venv\Scripts\python.exe test.py smoke
 
-# 完整回归：全部测试 + 二阶段多镜头成片 + 三阶段原声成片 + Streamlit 交互
+# 完整回归：全部测试 + 原有成片验收 + 分析/聚类/标注/片段导出 + Streamlit
 .\.venv\Scripts\python.exe test.py build
 
 # 可选：调用真实 OpenAI-compatible API
@@ -249,6 +266,8 @@ stage2_audit.json    # 媒体流、音量、镜头选择和事件链审计
 stage2_runs/         # 二阶段验收视频及全部中间产物
 stage3_audit.json    # 转写字幕、原音轨保留与媒体流审计
 stage3_runs/         # 三阶段原声验收视频及全部中间产物
+analysis_acceptance.json # 素材分析、相似镜头聚类与片段导出验收
+analysis_runs/       # 分析 JSON、CSV、SRT、缩略图与所选片段 MP4
 ```
 
 `build` 会检查 Python 包、FFmpeg/ffprobe、`subtitles`/`flite` 滤镜和 `libx264` 编码器，并验证状态、事件顺序、图片/视频素材、镜头检测与去重、镜头内循环、竖屏裁剪、转场、AI 旁白非静音、字幕、分辨率及质量报告。任一阶段失败都会生成带 `BUG-xxx` 编号、错误栈、日志路径和复现命令的 Bug 记录。
@@ -260,14 +279,26 @@ python -m unittest discover -s tests -v
 python cli.py --topic "How AI helps creators" --duration 16 --language en
 ```
 
-当前 25 项测试覆盖模型 JSON 解析与降级、转写 NLP、长字幕重分段、转写时间轴、无字幕原声模式、分镜规范化、素材恢复、未匹配上传素材回退、严格匹配模式、视频优先匹配、镜头检测、镜头去重、三种音轨路径、SRT 时间轴、失败步骤重试、成功警告状态审计、产物审计、Bug 报告生成，以及图片/视频混合、无关键词素材、保留原声和双音轨混合的真实 FFmpeg 端到端成片。
+当前 35 项测试覆盖自动切片、短镜头合并、持续音频/文本情绪变化切点、瞬时噪声过滤、音频候选与画面切点融合、相似镜头聚类、语音时间轴对齐、视觉模型结构化响应、情绪证据、无语音不虚构内容、所选片段导出，以及原有模型 JSON 降级、字幕、音轨、素材匹配、失败重试、Bug 报告和真实 FFmpeg 端到端成片能力。
 
 ## 系统架构图
 
 ```mermaid
 flowchart TD
-    U[用户] --> UI[Streamlit Web / CLI]
-    UI --> W[WorkflowAgent 状态式编排器]
+    U[用户] --> UI[Streamlit 分析台 / analyze.py]
+    UI --> VA[VideoAnalysisAgent]
+    VA --> CUT[转场切片 / 缩略图]
+    VA --> CL[相似镜头聚类]
+    VA --> AU[原声转写 / 音频能量]
+    VA --> VIS[可选视觉模型]
+    CUT --> REVIEW[人工复核与筛选]
+    CL --> REVIEW
+    AU --> REVIEW
+    VIS --> REVIEW
+    REVIEW --> AO[JSON / CSV / SRT / 所选片段 MP4]
+
+    U --> LEGACY[自动成片页面 / cli.py]
+    LEGACY --> W[WorkflowAgent 状态式编排器]
 
     W --> M[MediaAnalysisTool]
     M --> P[FFprobe 音视频信息]
@@ -293,14 +324,18 @@ flowchart TD
     W --> OBS[state.json / events.jsonl / manifests]
 ```
 
-执行顺序为：媒体分析 → 脚本 → 分镜 → 素材 → 音频 → 字幕 → 渲染 → 质量检查。工具层只处理单项能力，`WorkflowAgent` 负责状态推进、重试、降级、事件记录和最终产物汇总。
+主流程为：媒体检查 → 自动切片 → 特征提取 → 相似镜头聚类 → 语音/内容/情绪建议 → 人工复核 → 片段导出。旧自动成片流程仍按媒体分析 → 脚本 → 分镜 → 素材 → 音频 → 字幕 → 渲染 → 质量检查执行。
 
 ## 目录结构
 
 ```text
 storyforge-agent/
 ├─ storyforge/                 # Agent、Tool、模型与工作流核心代码
+│  ├─ analyzer.py              # 视频切片、聚类、音画特征和标注结果
+│  └─ vision.py                # 可选 OpenAI-compatible 视觉模型适配器
 ├─ tests/                      # 单元、集成、验收与降级测试
+├─ docs/analysis-workflow.md   # 分析架构、输出字段与模型接入说明
+├─ pages/2_自动成片.py          # 保留的主题驱动自动成片页面
 ├─ examples/
 │  ├─ assets/                  # 最小输入素材集（1 个视频 + 1 张图片）
 │  └─ output/                  # MP4、GIF、分镜、字幕、日志示例
@@ -309,6 +344,7 @@ storyforge-agent/
 │  └─ test-results/            # 一键测试报告与验收成片
 ├─ uploads/                    # 本地上传/测试素材，已被 Git 忽略
 ├─ app.py                      # Streamlit 用户界面
+├─ analyze.py                  # 素材分析命令行入口
 ├─ cli.py                      # 命令行入口
 └─ test.py                     # 一键自动测试与 Bug 报告入口
 ```
@@ -318,7 +354,7 @@ storyforge-agent/
 ## 适合作为下一轮优化的方向
 
 - 接入真实素材搜索 API 与版权信息记录。
-- 增加 CLIP/SigLIP 视觉模型，对镜头与分镜做语义一致性评分。
+- 用用户复核标签训练专用的音视频情绪与高光排序模型。
 - 用状态图框架替换当前轻量编排器，支持人工审核节点。
-- 增加视觉模型理解无台词画面、镜头级局部重写、局部重新配音和并行渲染。
+- 增加视觉 embedding 聚类，使“同一地点/同一游戏”判断超越基础颜色直方图。
 - 增加对象存储、队列和多任务并发。

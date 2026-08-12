@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from storyforge import WorkflowAgent, WorkflowConfig
+from storyforge import AnalysisConfig, VideoAnalysisAgent, WorkflowAgent, WorkflowConfig
 from storyforge.media import MediaAnalysisTool, TranscriptSegment
 from storyforge.tools import ScriptTool
 from storyforge.utils import run_command
@@ -182,7 +182,7 @@ def preflight() -> dict[str, Any]:
     if sys.version_info < (3, 10):
         raise RuntimeError(f"Python 3.10+ is required, got {sys.version.split()[0]}")
     packages = {}
-    for distribution in ["Pillow", "streamlit"]:
+    for distribution in ["Pillow", "numpy", "streamlit"]:
         packages[distribution] = importlib.metadata.version(distribution)
     binaries = {}
     for name in ["ffmpeg", "ffprobe"]:
@@ -277,7 +277,16 @@ def stage_two_acceptance(result_dir: Path) -> dict[str, Any]:
 def streamlit_acceptance() -> dict[str, Any]:
     from streamlit.testing.v1 import AppTest
 
-    app = AppTest.from_file(str(ROOT / "app.py"))
+    analysis_app = AppTest.from_file(str(ROOT / "app.py"))
+    analysis_app.run(timeout=30)
+    if analysis_app.exception:
+        raise RuntimeError(
+            f"Analysis workbench initial render failed: {[item.value for item in analysis_app.exception]}"
+        )
+    if not any("开始分析" in str(item.label) for item in analysis_app.button):
+        raise RuntimeError("Analysis workbench does not expose its primary action")
+
+    app = AppTest.from_file(str(ROOT / "pages" / "2_自动成片.py"))
     app.run(timeout=30)
     if app.exception:
         raise RuntimeError(f"Streamlit initial render failed: {[item.value for item in app.exception]}")
@@ -307,7 +316,86 @@ def streamlit_acceptance() -> dict[str, Any]:
     audit = audit_run(candidates[0], expected_width=720, expected_height=1280)
     if not audit.passed:
         raise RuntimeError("Streamlit artifact audit failed: " + "; ".join(issue.message for issue in audit.issues))
-    return {"run_dir": str(candidates[0]), "audit": audit.to_dict()}
+    return {
+        "analysis_workbench": "rendered",
+        "generation_run_dir": str(candidates[0]),
+        "audit": audit.to_dict(),
+    }
+
+
+def analysis_acceptance(result_dir: Path) -> dict[str, Any]:
+    source = result_dir / "analysis_acceptance_source.mp4"
+    output_dir = result_dir / "analysis_runs"
+    run_command([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=2",
+        "-f", "lavfi", "-i", "color=c=white:s=320x180:r=25:d=2",
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=2",
+        "-f", "lavfi", "-i", "sine=frequency=523:duration=6",
+        "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
+        "-map", "[v]", "-map", "3:a", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", str(source),
+    ])
+
+    def deterministic_transcriber(path: Path, language: str):
+        return ([
+            TranscriptSegment(0.0, 1.8, "We won an amazing opening round."),
+            TranscriptSegment(2.0, 3.8, "Warning, danger in the middle scene."),
+            TranscriptSegment(4.0, 5.8, "The opening view returns for comparison."),
+        ], "en", "analysis-test-transcriber")
+
+    result = VideoAnalysisAgent(
+        AnalysisConfig(
+            output_dir=output_dir,
+            scene_threshold=0.10,
+            similarity_threshold=0.95,
+            min_segment_seconds=0.5,
+            audio_window_seconds=1.0,
+            audio_hop_seconds=0.5,
+            audio_change_threshold=0.45,
+            emotion_persistence_windows=2,
+            transcribe=True,
+        ),
+        media_tool=MediaAnalysisTool(deterministic_transcriber),
+    ).run(source, language="en")
+    if len(result.segments) != 3:
+        raise RuntimeError(f"Expected three detected shots, got {len(result.segments)}")
+    if result.segments[0].cluster_id != result.segments[2].cluster_id:
+        raise RuntimeError("Visually repeated first and third shots were not clustered together")
+    if result.segments[0].cluster_id == result.segments[1].cluster_id:
+        raise RuntimeError("Visually distinct middle shot was assigned to the repeated-shot cluster")
+    if result.transcription_provider != "analysis-test-transcriber":
+        raise RuntimeError("Transcript provider was not recorded")
+    if not result.segments[0].emotion_evidence:
+        raise RuntimeError("Emotion suggestion has no supporting evidence")
+    audio_timeline = json.loads(Path(result.artifacts["audio_timeline"]).read_text(encoding="utf-8"))
+    if not audio_timeline["windows"]:
+        raise RuntimeError("Audio feature timeline is empty")
+    if not audio_timeline["emotion_boundaries"]:
+        raise RuntimeError("Persistent transcript emotion change did not create a boundary candidate")
+    if not any(
+        any("情绪变化" in reason for reason in item.boundary_reasons)
+        for item in result.segments[1:]
+    ):
+        raise RuntimeError("Audio emotion boundary reason was not preserved on the segment")
+    selection = VideoAnalysisAgent().export_selection(result, [1, 3])
+    required = [Path(value) for value in result.artifacts.values()]
+    if any(not path.exists() for path in required) or not selection.exists():
+        raise RuntimeError("Analysis or selected-clip artifacts are missing")
+    details = {
+        "analysis_id": result.analysis_id,
+        "analysis_json": result.artifacts["analysis_json"],
+        "segments": len(result.segments),
+        "clusters": len({item.cluster_id for item in result.segments}),
+        "selection_video": str(selection),
+        "transcription_provider": result.transcription_provider,
+        "audio_windows": len(audio_timeline["windows"]),
+        "audio_emotion_boundaries": len(audio_timeline["emotion_boundaries"]),
+    }
+    (result_dir / "analysis_acceptance.json").write_text(
+        json.dumps(details, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return details
 
 
 def stage_three_acceptance(result_dir: Path) -> dict[str, Any]:
@@ -410,7 +498,18 @@ def main() -> int:
             lambda: stage_three_acceptance(workflow.result_dir),
             "python test.py build",
         )
-        workflow.run_stage("streamlit", "Streamlit interactive generation", streamlit_acceptance, "python test.py build")
+        workflow.run_stage(
+            "analysis",
+            "AI material analysis and annotation acceptance",
+            lambda: analysis_acceptance(workflow.result_dir),
+            "python test.py build",
+        )
+        workflow.run_stage(
+            "streamlit",
+            "Streamlit analysis workbench and legacy generation page",
+            streamlit_acceptance,
+            "python test.py build",
+        )
     json_report, markdown_report = workflow.write_report()
     print("\n=== StoryForge test workflow ===")
     print(f"status={'PASSED' if workflow.passed else 'FAILED'}")
