@@ -89,7 +89,7 @@ if st.button("生成视频", type="primary", use_container_width=True):
         }
         width, height = dimensions[aspect_ratio]
         agent = WorkflowAgent(WorkflowConfig(
-            runs_dir=Path("runs"),
+            runs_dir=Path("artifacts/runs"),
             assets_dir=assets_dir,
             width=width,
             height=height,

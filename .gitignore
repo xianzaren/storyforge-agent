@@ -14,6 +14,7 @@ htmlcov/
 *.key
 
 # User uploads and generated workflow/test artifacts
+artifacts/
 runs/
 runs_*/
 test_results/

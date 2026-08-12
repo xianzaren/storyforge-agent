@@ -18,13 +18,13 @@
 
 ## 演示
 
-![StoryForge 六秒演示预览](examples/demo_preview.gif)
+![StoryForge 六秒演示预览](examples/output/preview.gif)
 
-- [播放或下载完整 MP4](examples/demo_final.mp4)
-- [演示说明与复现命令](examples/DEMO.md)
-- [分镜 JSON 示例](examples/output_samples/storyboard.json)
-- [SRT 字幕示例](examples/output_samples/subtitles.srt)
-- [JSONL 事件与重试日志示例](examples/output_samples/events.jsonl)
+- [播放或下载完整 MP4](examples/output/demo.mp4)
+- [演示说明与复现命令](examples/README.md)
+- [分镜 JSON 示例](examples/output/storyboard.json)
+- [SRT 字幕示例](examples/output/subtitles.srt)
+- [JSONL 事件与重试日志示例](examples/output/events.jsonl)
 
 > GitHub README 会直接显示上面的 GIF；MP4 链接可在支持的浏览器中播放或下载。演示文件不包含用户上传素材。
 
@@ -62,7 +62,7 @@ python cli.py --topic "How AI helps creators" --duration 24 --language en --max-
 
 # 竖屏、铺满裁剪、镜头检测与淡入淡出
 python cli.py --topic "AI creator workflow" --duration 16 --language en \
-  --assets-dir examples/stage2_assets --aspect-ratio 9:16 --fit-mode crop \
+  --assets-dir examples/assets --aspect-ratio 9:16 --fit-mode crop \
   --scene-threshold 0.25 --transition-seconds 0.35
 
 # 根据上传视频原声生成字幕，并保留原音轨
@@ -102,7 +102,7 @@ python cli.py --topic "人工智能如何帮助短视频创作者" --duration 16
 [workflow_completed]
 status=completed
 task_id=20260812-160542-人工智能如何帮助短视频创作者-d0b0f
-video=runs\20260812-160542-人工智能如何帮助短视频创作者-d0b0f\final.mp4
+video=artifacts\runs\20260812-160542-人工智能如何帮助短视频创作者-d0b0f\final.mp4
 ```
 
 上传视频原声驱动输入：
@@ -114,7 +114,7 @@ python cli.py --topic "原声字幕测试" --duration 30 --language zh `
 
 最终输出不仅包含 `final.mp4`，还包含可复查的脚本、分镜、字幕、音轨清单、质量报告、状态文件和事件日志。
 
-输出位于 `runs/<task_id>/`，包括：
+输出统一位于 `artifacts/runs/<task_id>/`，包括：
 
 ```text
 state.json          # 当前任务状态
@@ -198,7 +198,7 @@ CLI 和 Web 均支持 16:9、9:16、1:1，支持完整留边（`pad`）或铺满
 | 首次质量检查失败 | 重新渲染并再次检查 | `quality_retry`、`quality_report.json` |
 | 所有重试均失败 | 状态设为 `failed`，保留异常类型、步骤和已有产物 | `workflow_failed`、`state.error` |
 
-成功但发生降级时状态为 `completed_with_warnings`，并不等同于失败。完整日志格式见 [`examples/output_samples/events.jsonl`](examples/output_samples/events.jsonl)。一键测试失败时还会在 `test_results/` 生成 `BUG-xxx` 编号、堆栈和复现命令。
+成功但发生降级时状态为 `completed_with_warnings`，并不等同于失败。完整日志格式见 [`examples/output/events.jsonl`](examples/output/events.jsonl)。一键测试失败时还会在 `artifacts/test-results/` 生成 `BUG-xxx` 编号、堆栈和复现命令。
 
 ## 配置模型 API（可选）
 
@@ -237,7 +237,7 @@ python cli.py --topic "三十秒了解多模态模型" --language zh
 .\.venv\Scripts\python.exe test.py llm-test
 ```
 
-每次执行都会在 `test_results/<时间>-<命令>/` 生成：
+每次执行都会在 `artifacts/test-results/<时间>-<命令>/` 生成：
 
 ```text
 report.json          # 机器可读结果和 Bug 列表
@@ -292,6 +292,26 @@ flowchart TD
 ```
 
 执行顺序为：媒体分析 → 脚本 → 分镜 → 素材 → 音频 → 字幕 → 渲染 → 质量检查。工具层只处理单项能力，`WorkflowAgent` 负责状态推进、重试、降级、事件记录和最终产物汇总。
+
+## 目录结构
+
+```text
+storyforge-agent/
+├─ storyforge/                 # Agent、Tool、模型与工作流核心代码
+├─ tests/                      # 单元、集成、验收与降级测试
+├─ examples/
+│  ├─ assets/                  # 最小输入素材集（1 个视频 + 1 张图片）
+│  └─ output/                  # MP4、GIF、分镜、字幕、日志示例
+├─ artifacts/                  # 本地生成物，已被 Git 忽略
+│  ├─ runs/                    # Web/CLI 成片任务
+│  └─ test-results/            # 一键测试报告与验收成片
+├─ uploads/                    # 本地上传/测试素材，已被 Git 忽略
+├─ app.py                      # Streamlit 用户界面
+├─ cli.py                      # 命令行入口
+└─ test.py                     # 一键自动测试与 Bug 报告入口
+```
+
+仓库只提交代码、测试、文档和一套小型演示。用户素材、模型缓存、虚拟环境及所有运行产物都留在本地，不进入 GitHub。
 
 ## 适合作为下一轮优化的方向
 

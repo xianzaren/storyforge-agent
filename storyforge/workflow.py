@@ -15,7 +15,7 @@ from .utils import ffprobe_duration, slugify, write_json
 
 @dataclass
 class WorkflowConfig:
-    runs_dir: Path = Path("runs")
+    runs_dir: Path = Path("artifacts/runs")
     assets_dir: Path | None = None
     width: int = 1280
     height: int = 720

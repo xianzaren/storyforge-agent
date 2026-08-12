@@ -31,7 +31,7 @@ def main() -> int:
     parser.add_argument("--duration", type=positive_duration, default=30)
     parser.add_argument("--language", default="en", choices=["en", "zh"])
     parser.add_argument("--assets-dir", type=Path)
-    parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    parser.add_argument("--runs-dir", type=Path, default=Path("artifacts/runs"))
     parser.add_argument("--max-retries", type=int, default=1, choices=range(0, 4), metavar="0-3")
     parser.add_argument("--fit-mode", choices=["pad", "crop"], default="pad")
     parser.add_argument("--aspect-ratio", choices=["16:9", "9:16", "1:1"], default="16:9")

@@ -24,7 +24,7 @@ from storyforge.validation import RunAudit, audit_run
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_RESULTS_ROOT = ROOT / "test_results"
+DEFAULT_RESULTS_ROOT = ROOT / "artifacts" / "test-results"
 
 
 class SkipStage(RuntimeError):
@@ -297,7 +297,11 @@ def streamlit_acceptance() -> dict[str, Any]:
     print(json.dumps({"success": success, "errors": errors, "exceptions": exceptions}, ensure_ascii=False, indent=2))
     if errors or exceptions or not any("completed" in str(item) for item in success):
         raise RuntimeError("Streamlit generation workflow did not complete successfully")
-    candidates = sorted((ROOT / "runs").glob("*-automated-web-workflow-*"), key=lambda item: item.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        (ROOT / "artifacts" / "runs").glob("*-automated-web-workflow-*"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
     if not candidates:
         raise RuntimeError("Cannot find the Streamlit-generated run directory")
     audit = audit_run(candidates[0], expected_width=720, expected_height=1280)
