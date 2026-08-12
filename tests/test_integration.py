@@ -223,6 +223,35 @@ class WorkflowIntegrationTests(unittest.TestCase):
             stream_types = {item["codec_type"] for item in json.loads(probe.stdout)["streams"]}
             self.assertEqual(stream_types, {"video", "audio"})
 
+    def test_no_subtitle_mode_preserves_source_audio_without_burned_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets_dir = root / "assets"
+            assets_dir.mkdir()
+            source = assets_dir / "nature_ambience.mp4"
+            run_command([
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=green:s=320x180:d=4",
+                "-f", "lavfi", "-i", "sine=frequency=220:duration=4", "-shortest",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
+            ])
+            state = WorkflowAgent(WorkflowConfig(
+                runs_dir=root / "runs",
+                assets_dir=assets_dir,
+                width=640,
+                height=360,
+                enable_scene_detection=False,
+                subtitle_source="none",
+                audio_mode="source_original",
+            )).run("A quiet nature scene", target_duration=4, language="en")
+
+            self.assertIn(state.status, {"completed", "completed_with_warnings"})
+            self.assertEqual(state.artifacts["subtitles_requested"], "false")
+            self.assertEqual(state.artifacts["subtitles_burned"], "false")
+            self.assertEqual(Path(state.artifacts["subtitles"]).read_text(encoding="utf-8"), "")
+            self.assertTrue(all(scene.subtitle_source == "none" for scene in state.scenes))
+            self.assertTrue(all(scene.source_audio_used for scene in state.scenes))
+            self.assertEqual(state.artifacts["quality_passed"], "true")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,9 +21,13 @@ with st.sidebar:
     fit_mode = st.selectbox("素材适配", ["pad", "crop"], format_func=lambda item: "完整留边" if item == "pad" else "铺满裁剪")
     subtitle_source = st.selectbox(
         "字幕来源",
-        ["generated_narration", "source_audio"],
-        format_func=lambda item: "根据主题生成" if item == "generated_narration" else "识别上传视频原声",
-        help="原声识别需要安装 faster-whisper；不可用或视频没有语音时会明确降级到主题脚本。",
+        ["generated_narration", "source_audio", "none"],
+        format_func=lambda item: {
+            "generated_narration": "根据主题生成",
+            "source_audio": "识别上传视频原声",
+            "none": "不添加字幕",
+        }[item],
+        help="原声识别需要安装 faster-whisper；风景或环境声视频可选择不添加字幕。",
     )
     audio_mode = st.selectbox(
         "成片音轨",

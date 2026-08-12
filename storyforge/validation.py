@@ -64,7 +64,7 @@ def audit_run(
 
     for name in REQUIRED_FILES:
         path = run_dir / name
-        if not path.exists() or path.stat().st_size == 0:
+        if not path.exists() or (path.stat().st_size == 0 and name != "subtitles.srt"):
             issues.append(AuditIssue("missing_artifact", f"Missing or empty artifact: {name}", details={"path": str(path)}))
 
     state = _read_json(run_dir / "state.json", issues)
@@ -84,7 +84,10 @@ def audit_run(
         ))
     if quality.get("passed") is not True:
         issues.append(AuditIssue("quality_failed", "quality_report.json did not pass", details={"checks": quality.get("checks", {})}))
-    if state.get("artifacts", {}).get("subtitles_burned") != "true":
+    if (
+        settings.get("subtitle_source") != "none"
+        and state.get("artifacts", {}).get("subtitles_burned") != "true"
+    ):
         issues.append(AuditIssue("subtitle_flag", "Final video is not marked as subtitle-burned"))
 
     _audit_events(run_dir / "events.jsonl", issues, facts)

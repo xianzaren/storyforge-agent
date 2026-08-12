@@ -78,21 +78,21 @@ class ScriptTool:
         duration = target_duration / count
         if language.lower().startswith("zh"):
             templates = [
-                ("开场", f"用几十秒快速了解{topic}。", "主题概览"),
-                ("为什么重要", f"{topic}正在改变内容生产的速度与方式。", "真实使用场景"),
-                ("核心方法", "关键是把复杂目标拆成清晰步骤，并为每一步选择合适工具。", "工作流与工具"),
-                ("可靠性", "结构化结果、状态记录和局部重试让自动化流程更稳定。", "质量检查"),
-                ("总结", f"从一个小型可运行流程开始，再持续优化{topic}。", "下一步行动"),
-                ("结束", "把创意交给人，把重复工作交给自动化。", "创作与自动化"),
+                ("开场", f"用几十秒感受{topic}。", topic),
+                ("画面", f"镜头记录了{topic}中的景象与氛围。", topic),
+                ("细节", f"留意画面中的色彩、光线、声音和变化，感受{topic}。", topic),
+                ("氛围", f"这些连续画面呈现出{topic}独特的节奏。", topic),
+                ("回顾", f"这是关于{topic}的一段简短影像记录。", topic),
+                ("结束", f"感谢观看这段关于{topic}的视频。", topic),
             ]
         else:
             templates = [
-                ("Hook", f"Here is a quick way to understand {topic}.", "fast topic introduction"),
-                ("Why it matters", f"{topic} is changing how creators turn ideas into finished content.", "creator workflow"),
-                ("Core method", "Break the goal into clear steps, then give each step the right tool.", "workflow and tools"),
-                ("Reliability", "Structured outputs, event logs, and local retries make the pipeline dependable.", "quality control"),
-                ("Takeaway", f"Start with one working flow, measure it, and improve {topic} scene by scene.", "iteration"),
-                ("Close", "Keep human judgment in the loop and automate the repetitive work.", "human and AI collaboration"),
+                ("Opening", f"Take a brief look at {topic}.", topic),
+                ("Scene", f"The footage captures the setting and atmosphere of {topic}.", topic),
+                ("Details", f"Notice the light, colour, sound, and movement throughout {topic}.", topic),
+                ("Atmosphere", f"These moments reveal the natural rhythm of {topic}.", topic),
+                ("Review", f"This is a short visual record of {topic}.", topic),
+                ("Close", f"Thank you for watching this view of {topic}.", topic),
             ]
         selected = templates[:count]
         return [Scene(i, title, narration, query, title, duration) for i, (title, narration, query) in enumerate(selected, 1)]
@@ -616,6 +616,7 @@ class QualityTool:
         subtitles_path: Path | None = None,
         expected_width: int | None = None,
         expected_height: int | None = None,
+        require_subtitles: bool = True,
     ) -> dict:
         expected = sum(scene.duration_seconds for scene in scenes)
         actual = ffprobe_duration(final_video) if final_video.exists() else 0.0
@@ -652,7 +653,7 @@ class QualityTool:
             "all_scenes_have_assets": not missing,
             "all_scenes_have_audio": not missing_audio,
             "all_scenes_have_rendered_clips": not missing_clips,
-            "subtitles_generated_and_burned": subtitle_ready,
+            "subtitles_generated_and_burned": subtitle_ready if require_subtitles else True,
             "duration_within_tolerance": duration_delta <= max(1.5, expected * 0.08),
         }
         return {
@@ -666,4 +667,5 @@ class QualityTool:
             "missing_clip_scene_ids": missing_clips,
             "video_asset_scene_ids": [scene.scene_id for scene in scenes if scene.asset_type == "video"],
             "streams": streams,
+            "subtitles_requested": require_subtitles,
         }

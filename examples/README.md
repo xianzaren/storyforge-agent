@@ -15,7 +15,7 @@ python cli.py --topic "How AI helps creators" --duration 16 --language en
 
 Verification result:
 
-- 24/24 unit, automation, and FFmpeg integration tests passed.
+- 25/25 unit, automation, and FFmpeg integration tests passed.
 - The workflow completed with status `completed`.
 - All scenes had valid assets.
 - Expected duration: 16.307 seconds.

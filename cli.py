@@ -45,7 +45,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--subtitle-source",
-        choices=["generated_narration", "source_audio"],
+        choices=["generated_narration", "source_audio", "none"],
         default="generated_narration",
         help="Generate subtitles from the topic or transcribe speech in an uploaded video.",
     )

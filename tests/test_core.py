@@ -57,6 +57,8 @@ class CoreTests(unittest.TestCase):
         scenes = ScriptTool().run("AI for creators", 24, "en")
         self.assertGreaterEqual(len(scenes), 3)
         self.assertTrue(all(scene.narration and scene.visual_query for scene in scenes))
+        self.assertTrue(all("Break the goal" not in scene.narration for scene in scenes))
+        self.assertTrue(all("AI for creators" in scene.narration for scene in scenes))
 
     def test_llm_json_response_is_parsed(self) -> None:
         class FakeLLM:

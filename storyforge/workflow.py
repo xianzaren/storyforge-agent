@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -36,8 +37,8 @@ class WorkflowAgent:
     def __init__(self, config: WorkflowConfig | None = None, on_event: Callable[[str, dict], None] | None = None) -> None:
         self.config = config or WorkflowConfig()
         self.on_event = on_event
-        if self.config.subtitle_source not in {"generated_narration", "source_audio"}:
-            raise ValueError("subtitle_source must be generated_narration or source_audio")
+        if self.config.subtitle_source not in {"generated_narration", "source_audio", "none"}:
+            raise ValueError("subtitle_source must be generated_narration, source_audio, or none")
         if self.config.audio_mode not in {"narration_replace", "source_original", "source_narration_mix"}:
             raise ValueError("Unsupported audio_mode")
         self.media_tool = MediaAnalysisTool()
@@ -177,6 +178,9 @@ class WorkflowAgent:
         else:
             state.scenes = self.script_tool.run(state.topic, state.target_duration, state.language)
             provider = self.script_tool.last_provider
+        if self.config.subtitle_source == "none":
+            for scene in state.scenes:
+                scene.subtitle_source = "none"
         path = run_dir / "script.json"
         write_json(path, {
             "topic": state.topic,
@@ -294,6 +298,19 @@ class WorkflowAgent:
                 provider = "source-original"
                 scene.audio_path = str(actual_path)
                 scene.source_audio_used = True
+            elif self.config.audio_mode == "source_original" and self.config.subtitle_source == "none":
+                audio_path = run_dir / "audio" / f"scene_{scene.scene_id:02}.wav"
+                self.tts_tool._silent(audio_path, scene.duration_seconds)
+                actual_path = audio_path
+                provider = "silent-no-source-audio"
+                scene.audio_path = str(actual_path)
+                scene.source_audio_used = False
+                warning = f"Scene {scene.scene_id} has no source audio; a silent track was used."
+                state.warnings.append(warning)
+                self._event(run_dir, "source_audio_fallback", {
+                    "scene_id": scene.scene_id,
+                    "action": "used_silence_without_generated_narration",
+                })
             else:
                 audio_path = run_dir / "audio" / f"scene_{scene.scene_id:02}.wav"
                 actual_path, provider = self.tts_tool.run(
@@ -325,7 +342,11 @@ class WorkflowAgent:
             state.warnings.append("TTS provider unavailable for at least one scene; a silent placeholder track was used.")
 
     def _create_subtitles(self, state: ProjectState, run_dir: Path) -> None:
-        path = self.subtitle_tool.run(state.scenes, run_dir / "subtitles.srt")
+        path = run_dir / "subtitles.srt"
+        if self.config.subtitle_source == "none":
+            path.write_text("", encoding="utf-8")
+        else:
+            path = self.subtitle_tool.run(state.scenes, path)
         state.artifacts["subtitles"] = str(path)
 
     def _render(self, state: ProjectState, run_dir: Path) -> None:
@@ -346,14 +367,19 @@ class WorkflowAgent:
             scene.clip_path = str(path)
             clips.append(path)
         raw_video = self.render_tool.concatenate(clips, run_dir / "final_raw.mp4")
-        final_video = self.render_tool.burn_subtitles(
-            raw_video,
-            Path(state.artifacts["subtitles"]),
-            run_dir / "final.mp4",
-        )
+        if self.config.subtitle_source == "none":
+            final_video = run_dir / "final.mp4"
+            shutil.copyfile(raw_video, final_video)
+        else:
+            final_video = self.render_tool.burn_subtitles(
+                raw_video,
+                Path(state.artifacts["subtitles"]),
+                run_dir / "final.mp4",
+            )
         state.artifacts["raw_video"] = str(raw_video)
         state.artifacts["video"] = str(final_video)
-        state.artifacts["subtitles_burned"] = "true"
+        state.artifacts["subtitles_burned"] = str(self.config.subtitle_source != "none").lower()
+        state.artifacts["subtitles_requested"] = str(self.config.subtitle_source != "none").lower()
         manifest_path = Path(state.artifacts["assets_manifest"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["assignments"] = [self._asset_assignment(scene) for scene in state.scenes]
@@ -396,6 +422,7 @@ class WorkflowAgent:
             subtitles_path,
             expected_width=self.config.width,
             expected_height=self.config.height,
+            require_subtitles=self.config.subtitle_source != "none",
         )
         if not report["passed"] and state.retries.get("quality", 0) < self.config.max_retries:
             state.retries["quality"] = state.retries.get("quality", 0) + 1
@@ -407,6 +434,7 @@ class WorkflowAgent:
                 subtitles_path,
                 expected_width=self.config.width,
                 expected_height=self.config.height,
+                require_subtitles=self.config.subtitle_source != "none",
             )
         write_json(run_dir / "quality_report.json", report)
         state.artifacts["quality_report"] = str(run_dir / "quality_report.json")
