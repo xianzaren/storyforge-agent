@@ -1,0 +1,28 @@
+{
+  "scenes": [
+    {
+      "scene_id": 1,
+      "title": "开场",
+      "narration": "用几十秒快速了解人工智能短视频创作。",
+      "visual_query": "主题概览",
+      "on_screen_text": "AI 短视频创作",
+      "duration_seconds": 4.0,
+      "asset_type": "video",
+      "asset_selection_reason": "keyword_match",
+      "subtitle_source": "generated_narration",
+      "audio_mode": "narration_replace"
+    },
+    {
+      "scene_id": 2,
+      "title": "核心流程",
+      "narration": "系统依次完成脚本、分镜、素材、配音、字幕和渲染。",
+      "visual_query": "工作流与工具",
+      "on_screen_text": "自动化工作流",
+      "duration_seconds": 6.0,
+      "asset_type": "video",
+      "asset_selection_reason": "unmatched_user_fallback",
+      "subtitle_source": "generated_narration",
+      "audio_mode": "source_narration_mix"
+    }
+  ]
+}

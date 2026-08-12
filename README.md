@@ -16,6 +16,18 @@
 
 > 默认离线模式无需模型 API：脚本使用确定性模板，画面使用自动生成的标题卡，英文配音使用 FFmpeg flite。配置 OpenAI-compatible API 后可生成更自然的结构化脚本；安装 `edge-tts` 后可生成中文配音；安装 `faster-whisper` 后可离线读取上传视频中的中英文语音。
 
+## 演示
+
+![StoryForge 六秒演示预览](examples/demo_preview.gif)
+
+- [播放或下载完整 MP4](examples/demo_final.mp4)
+- [演示说明与复现命令](examples/DEMO.md)
+- [分镜 JSON 示例](examples/output_samples/storyboard.json)
+- [SRT 字幕示例](examples/output_samples/subtitles.srt)
+- [JSONL 事件与重试日志示例](examples/output_samples/events.jsonl)
+
+> GitHub README 会直接显示上面的 GIF；MP4 链接可在支持的浏览器中播放或下载。演示文件不包含用户上传素材。
+
 ## 环境要求
 
 - Python 3.10+
@@ -23,13 +35,22 @@
 
 安装：
 
-```bash
+```powershell
+# Windows PowerShell
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
 # 可选：启用上传视频语音识别
 pip install -r requirements-transcription.txt
+```
+
+Linux/macOS 激活命令为 `source .venv/bin/activate`。此外，请确认以下命令均能正常输出版本：
+
+```powershell
+python --version
+ffmpeg -version
+ffprobe -version
 ```
 
 ## 一分钟运行
@@ -59,6 +80,39 @@ python cli.py --topic "上传视频重配音" --assets-dir my_videos \
 ```bash
 streamlit run app.py
 ```
+
+浏览器打开 `http://localhost:8501`。输入主题、上传可选素材并选择字幕与音轨模式，点击“生成视频”后即可预览和下载 MP4。
+
+## 输入与输出示例
+
+主题驱动输入：
+
+```powershell
+python cli.py --topic "人工智能如何帮助短视频创作者" --duration 16 --language zh
+```
+
+典型控制台输出：
+
+```text
+[step_started] media_analysis
+[step_completed] media_analysis
+[step_started] script
+...
+[step_completed] quality
+[workflow_completed]
+status=completed
+task_id=20260812-160542-人工智能如何帮助短视频创作者-d0b0f
+video=runs\20260812-160542-人工智能如何帮助短视频创作者-d0b0f\final.mp4
+```
+
+上传视频原声驱动输入：
+
+```powershell
+python cli.py --topic "原声字幕测试" --duration 30 --language zh `
+  --assets-dir my_videos --subtitle-source source_audio --audio-mode source_original
+```
+
+最终输出不仅包含 `final.mp4`，还包含可复查的脚本、分镜、字幕、音轨清单、质量报告、状态文件和事件日志。
 
 输出位于 `runs/<task_id>/`，包括：
 
@@ -129,6 +183,23 @@ CLI 和 Web 均支持 16:9、9:16、1:1，支持完整留边（`pad`）或铺满
 
 完全没有上传素材时，Agent 会生成场景标题卡并记录一次局部恢复事件。开启严格匹配后，没有匹配素材也会生成标题卡。
 
+## 失败重试与降级机制
+
+工作流每一步都通过同一个状态式执行器运行。默认 `max_retries=1`，即首次失败后再尝试一次；可通过 CLI 的 `--max-retries 0-3` 调整。每次执行都会先写入 `state.json`，再把 `step_started`、`step_failed`、`step_retry`、`step_completed` 等事件追加到 `events.jsonl`，因此中间过程和错误原因可追踪。
+
+| 场景 | 处理方式 | 可观察记录 |
+|---|---|---|
+| LLM 超时、返回非法 JSON | 记录错误，重试；仍不可用时切换离线模板脚本 | `model_fallback`、`warnings`、`script_provider` |
+| Whisper 未安装、模型不可用或无语音 | 不伪造转写，改用主题脚本 | `transcription_fallback`、`media_analysis.json` |
+| 中文 TTS 不可用 | 生成静音占位音轨，工作流继续并标记警告 | `silent-fallback`、`tts_manifest.json` |
+| 未上传素材 | 自动生成分镜标题卡 | `local_recovery`、`asset_recovery` |
+| 上传素材与关键词不匹配 | 默认仍采用用户素材；可启用严格匹配改用标题卡 | `unmatched_asset_fallback`、`assets_manifest.json` |
+| 要求保留原声但镜头没有音轨 | 该分镜退回生成旁白 | `source_audio_fallback`、`warnings` |
+| 首次质量检查失败 | 重新渲染并再次检查 | `quality_retry`、`quality_report.json` |
+| 所有重试均失败 | 状态设为 `failed`，保留异常类型、步骤和已有产物 | `workflow_failed`、`state.error` |
+
+成功但发生降级时状态为 `completed_with_warnings`，并不等同于失败。完整日志格式见 [`examples/output_samples/events.jsonl`](examples/output_samples/events.jsonl)。一键测试失败时还会在 `test_results/` 生成 `BUG-xxx` 编号、堆栈和复现命令。
+
 ## 配置模型 API（可选）
 
 项目使用 OpenAI-compatible Chat Completions 接口，不绑定特定供应商：
@@ -189,21 +260,38 @@ python cli.py --topic "How AI helps creators" --duration 16 --language en
 
 当前 24 项测试覆盖模型 JSON 解析与降级、转写 NLP、长字幕重分段、转写时间轴、分镜规范化、素材恢复、未匹配上传素材回退、严格匹配模式、视频优先匹配、镜头检测、镜头去重、三种音轨路径、SRT 时间轴、失败步骤重试、成功警告状态审计、产物审计、Bug 报告生成，以及图片/视频混合、无关键词素材、保留原声和双音轨混合的真实 FFmpeg 端到端成片。
 
-## 架构
+## 系统架构图
 
-```text
-User / Streamlit / CLI
-          |
-     WorkflowAgent
-          |
-  +-------+--------+---------+---------+
-  | Media Analysis| Script + Asset     |
-  | Whisper + NLP | TTS + Subtitle     |
-  | Audio Mixer   | Render + Quality  |
-  +-------+--------+---------+---------+
-          |
-   state.json + events.jsonl + final.mp4
+```mermaid
+flowchart TD
+    U[用户] --> UI[Streamlit Web / CLI]
+    UI --> W[WorkflowAgent 状态式编排器]
+
+    W --> M[MediaAnalysisTool]
+    M --> P[FFprobe 音视频信息]
+    M --> WH[Faster-Whisper + NLP 转写]
+
+    W --> S[ScriptTool]
+    S --> LLM[OpenAI-compatible API]
+    S --> FT[离线模板降级]
+
+    W --> B[StoryboardTool]
+    W --> A[AssetTool]
+    A --> SD[镜头检测 / 素材匹配 / 标题卡恢复]
+
+    W --> T[TTSTool + SubtitleTool]
+    W --> R[RenderTool]
+    R --> MX[原声保留 / AI 配音 / 混音]
+    MX --> FF[FFmpeg 裁切、拼接、字幕烧录]
+
+    W --> Q[QualityTool]
+    Q -->|未通过且可重试| R
+    Q --> O[final.mp4]
+
+    W --> OBS[state.json / events.jsonl / manifests]
 ```
+
+执行顺序为：媒体分析 → 脚本 → 分镜 → 素材 → 音频 → 字幕 → 渲染 → 质量检查。工具层只处理单项能力，`WorkflowAgent` 负责状态推进、重试、降级、事件记录和最终产物汇总。
 
 ## 适合作为下一轮优化的方向
 

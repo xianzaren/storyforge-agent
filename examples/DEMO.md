@@ -1,4 +1,10 @@
-# Verified offline demo
+# Verified StoryForge demo
+
+![Six-second preview](demo_preview.gif)
+
+- Full video: [`demo_final.mp4`](demo_final.mp4)
+- Quality report: [`demo_quality_report.json`](demo_quality_report.json)
+- Output structure examples: [`output_samples/`](output_samples/)
 
 Command:
 
@@ -8,7 +14,7 @@ python cli.py --topic "How AI helps creators" --duration 16 --language en
 
 Verification result:
 
-- 15/15 unit, automation, and FFmpeg integration tests passed.
+- 24/24 unit, automation, and FFmpeg integration tests passed.
 - The workflow completed with status `completed`.
 - All scenes had valid assets.
 - Expected duration: 16.307 seconds.

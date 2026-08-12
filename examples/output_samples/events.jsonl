@@ -1,0 +1,9 @@
+{"timestamp": 1786546800.100, "event": "step_started", "step": "media_analysis", "attempt": 1}
+{"timestamp": 1786546800.520, "event": "media_analyzed", "video_count": 1, "audio_video_count": 1, "transcript_segments": 0, "transcription_requested": false}
+{"timestamp": 1786546800.530, "event": "step_completed", "step": "media_analysis", "attempt": 1}
+{"timestamp": 1786546800.600, "event": "step_started", "step": "script", "attempt": 1}
+{"timestamp": 1786546801.100, "event": "step_failed", "step": "script", "attempt": 1, "error": "TimeoutError: model timeout"}
+{"timestamp": 1786546801.110, "event": "step_retry", "step": "script", "retry": 1}
+{"timestamp": 1786546801.300, "event": "model_fallback", "reason": "TimeoutError: model timeout"}
+{"timestamp": 1786546801.350, "event": "step_completed", "step": "script", "attempt": 2}
+{"timestamp": 1786546815.900, "event": "workflow_completed", "status": "completed_with_warnings", "warnings": ["LLM generation failed; template fallback was used."]}
