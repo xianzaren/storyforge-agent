@@ -23,6 +23,9 @@ flowchart LR
     AB --> BF
     E --> H
     H --> R[人工复核、筛选和标注]
+    H --> PK[连续事件素材包]
+    PK --> SG[跨时间相似组]
+    SG --> PA[预览 / 片段 / 字幕 / 联系表 / JSON]
     R --> O[JSON / CSV / SRT / 所选片段 MP4]
 ```
 
@@ -75,6 +78,15 @@ analysis.json          完整机器可读分析结果
 segments.csv           可在表格软件中继续标注的镜头清单
 transcript.srt         只来自原视频语音的字幕；无语音时为空
 audio_timeline.json    每个音频窗口的声学/文本情绪特征及候选切点
+packages/
+  package_manifest.json 所有素材包及跨时间相似组
+  package_001/
+    package.json         内容、情绪、证据、置信度和待复核状态
+    preview.mp4          素材包连续预览
+    contact_sheet.jpg    包内镜头联系表
+    transcript.srt      相对素材包时间轴的原声字幕
+    clips/              保留原声的独立小片段
+packages.zip            可从 Web 一次下载的全部素材包
 events.jsonl           分析事件与降级记录
 thumbnails/            每个片段的代表帧
 reviewed_analysis.json 用户在 Web 中保存后的复核结果
@@ -113,6 +125,10 @@ streamlit run app.py
 - 音频候选切点综合文本情绪变化、持续能量变化、频谱变化和语音状态；`boundary_reasons` 与 `boundary_score` 会保存在片段中。
 - 默认要求变化至少持续 2 个窗口。一个窗口的爆音或碰撞声不会单独触发切片；确有需要时可把持续窗口数调为 1。
 - 关闭 Whisper 后仍可依据声学变化切片，但不能利用转写文本中的“兴奋→紧张”等情绪变化。
+- 素材包只合并时间连续且画面组/情绪/关键词足够一致的片段。画面转场且镜头组不同，或出现持续情绪/声学变化时会开启新包。
+- 非连续素材不会被拼成同一事件包；外观或标签相近时仅共享 `similar_group_id`，供用户筛选比较。
+- `needs_review=true` 表示内容与情绪综合置信度较低，不会强行给出确定性语义。
+- 用户修改“保留、人工情绪、人工内容标签”后，可点击“按人工标注重建素材包”；未保留片段会被排除，人工标签和情绪优先于 AI 建议。
 
 ## 下一步模型训练建议
 

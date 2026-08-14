@@ -12,11 +12,35 @@ from storyforge import AnalysisConfig, VideoAnalysisAgent, VideoAnalysisResult
 from storyforge.analyzer import SegmentAnnotation
 from storyforge.audio_features import AudioFeatureTool
 from storyforge.media import MediaAnalysisTool, TranscriptSegment
+from storyforge.packager import MaterialPackager, PackageConfig
 from storyforge.utils import ffprobe_duration, run_command
 from storyforge.vision import OpenAICompatibleVisionTagger
 
 
 class AnalysisUnitTests(unittest.TestCase):
+    @staticmethod
+    def _package_segment(
+        segment_id: int,
+        start: float,
+        cluster: int,
+        emotion: str = "平静",
+        reasons: list[str] | None = None,
+    ) -> SegmentAnnotation:
+        return SegmentAnnotation(
+            segment_id=segment_id,
+            start_seconds=start,
+            end_seconds=start + 2,
+            duration_seconds=2,
+            thumbnail_path="unused.jpg",
+            cluster_id=cluster,
+            cluster_similarity=1,
+            boundary_reasons=reasons or (["视频开始"] if segment_id == 1 else []),
+            content_summary="测试内容",
+            content_confidence=0.7,
+            suggested_emotion=emotion,
+            emotion_confidence=0.7,
+        )
+
     def test_emotion_annotation_includes_evidence_and_highlight_score(self) -> None:
         segment = SegmentAnnotation(
             segment_id=1,
@@ -112,6 +136,34 @@ class AnalysisUnitTests(unittest.TestCase):
         )
         self.assertEqual(boundaries, [])
 
+    def test_material_packages_split_on_emotion_boundary_and_link_similar_groups(self) -> None:
+        segments = [
+            self._package_segment(1, 0, 1),
+            self._package_segment(2, 2, 1),
+            self._package_segment(3, 4, 2, "紧张", ["文本情绪变化:平静→紧张"]),
+            self._package_segment(4, 6, 1, "平静", ["画面转场"]),
+        ]
+        packager = MaterialPackager(PackageConfig(export_media=False))
+        with tempfile.TemporaryDirectory() as directory:
+            packages = packager.build(Path("source.mp4"), segments, Path(directory))
+        self.assertEqual([item.segment_ids for item in packages], [[1, 2], [3], [4]])
+        self.assertEqual(packages[0].similar_group_id, packages[2].similar_group_id)
+        self.assertNotEqual(packages[0].similar_group_id, packages[1].similar_group_id)
+
+    def test_material_packages_respect_keep_and_manual_labels(self) -> None:
+        first = self._package_segment(1, 0, 1)
+        first.user_label = "开场介绍"
+        first.review_emotion = "期待"
+        omitted = self._package_segment(2, 2, 1)
+        omitted.keep = False
+        third = self._package_segment(3, 4, 1)
+        packager = MaterialPackager(PackageConfig(export_media=False))
+        with tempfile.TemporaryDirectory() as directory:
+            packages = packager.build(Path("source.mp4"), [first, omitted, third], Path(directory))
+        self.assertEqual([item.segment_ids for item in packages], [[1], [3]])
+        self.assertIn("开场介绍", packages[0].content_tags)
+        self.assertEqual(packages[0].dominant_emotion, "期待")
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is not available")
 class AnalysisIntegrationTests(unittest.TestCase):
@@ -148,6 +200,7 @@ class AnalysisIntegrationTests(unittest.TestCase):
                     similarity_threshold=0.95,
                     min_segment_seconds=0.4,
                     transcribe=True,
+                    build_material_packages=True,
                 ),
                 media_tool=MediaAnalysisTool(self._transcriber),
             )
@@ -164,6 +217,14 @@ class AnalysisIntegrationTests(unittest.TestCase):
 
             for key in ["analysis_json", "segments_csv", "transcript_srt", "events", "thumbnails"]:
                 self.assertTrue(Path(result.artifacts[key]).exists(), key)
+            self.assertTrue(Path(result.artifacts["package_manifest"]).exists())
+            self.assertTrue(Path(result.artifacts["packages_archive"]).exists())
+            self.assertGreaterEqual(len(result.packages), 3)
+            first_package = result.packages[0]
+            for key in ["preview_path", "contact_sheet_path", "subtitle_path"]:
+                self.assertTrue(Path(first_package[key]).exists(), key)
+            self.assertTrue(all(Path(path).exists() for path in first_package["clip_paths"]))
+            self.assertEqual(result.packages[0]["similar_group_id"], result.packages[2]["similar_group_id"])
             loaded = VideoAnalysisResult.load(Path(result.artifacts["analysis_json"]))
             self.assertEqual(len(loaded.segments), len(result.segments))
 

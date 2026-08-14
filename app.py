@@ -11,6 +11,8 @@ from storyforge import (
     OpenAICompatibleVisionTagger,
     VideoAnalysisAgent,
     VideoAnalysisResult,
+    MaterialPackager,
+    PackageConfig,
 )
 from storyforge.utils import write_json
 
@@ -159,6 +161,22 @@ with settings:
             help="设为 2 可过滤单个窗口的瞬时噪声。",
             key="analysis_audio_persistence",
         )
+    build_packages = st.checkbox(
+        "自动生成连续事件素材包",
+        value=True,
+        help="输出每个包的片段、预览 MP4、字幕、缩略图拼图和 package.json。",
+        key="analysis_build_packages",
+    )
+    with st.expander("素材包高级参数", expanded=False):
+        package_merge_threshold = st.slider(
+            "相邻片段合并阈值", 0.20, 0.90, 0.45, 0.05,
+            help="越高越不容易把相邻片段放入同一素材包。",
+            key="analysis_package_threshold",
+        )
+        max_package_seconds = st.slider(
+            "单包最长时长（秒）", 5, 120, 30, 5,
+            key="analysis_package_max_duration",
+        )
     analyse = st.button("开始分析", type="primary", use_container_width=True, key="run_analysis")
     progress_box = st.empty()
 
@@ -198,6 +216,9 @@ if analyse:
                 audio_hop_seconds=min(audio_hop_seconds, audio_window_seconds),
                 audio_change_threshold=audio_change_threshold,
                 emotion_persistence_windows=emotion_persistence_windows,
+                build_material_packages=build_packages,
+                package_merge_threshold=package_merge_threshold,
+                max_package_seconds=float(max_package_seconds),
             ),
             visual_tagger=OpenAICompatibleVisionTagger() if use_vision else None,
             on_event=on_event,
@@ -227,6 +248,29 @@ if result:
     )
     for warning in result.warnings:
         st.warning(warning)
+
+    if result.packages:
+        st.subheader("自动素材包")
+        st.caption("素材包只是剪辑前的连续事件建议；相似组用于关联外观相近但时间不连续的素材。")
+        package_columns = st.columns(3)
+        for index, package in enumerate(result.packages):
+            with package_columns[index % 3]:
+                sheet = Path(package.get("contact_sheet_path", ""))
+                if sheet.is_file():
+                    st.image(str(sheet), use_container_width=True)
+                st.markdown(f"**{package['package_id']} · {package['title']}**")
+                st.caption(
+                    f"{package['start_seconds']:.1f}–{package['end_seconds']:.1f}s · "
+                    f"片段 {package['segment_ids']} · 相似组 {package['similar_group_id']}"
+                )
+                st.caption(
+                    f"情绪：{' → '.join(package['emotion_trend'])} · "
+                    f"置信度 {package['confidence']:.2f} · "
+                    f"{'待复核' if package['needs_review'] else '较高可信'}"
+                )
+                preview = Path(package.get("preview_path", ""))
+                if preview.is_file():
+                    st.video(preview.read_bytes())
 
     left_filter, right_filter = st.columns(2)
     cluster_options = ["全部", *[str(value) for value in sorted({item.cluster_id for item in result.segments})]]
@@ -269,7 +313,7 @@ if result:
     )
     reviewed_rows = edited.to_dict("records") if hasattr(edited, "to_dict") else list(edited)
 
-    save_col, export_col = st.columns(2)
+    save_col, export_col, package_col = st.columns(3)
     with save_col:
         if st.button("保存人工标注", use_container_width=True, key="save_review"):
             reviewed_path = apply_review(result, reviewed_rows)
@@ -285,6 +329,27 @@ if result:
                 st.success(f"已导出 {len(selected_ids)} 个片段")
             except Exception as exc:
                 st.exception(exc)
+    with package_col:
+        if st.button("按人工标注重建素材包", use_container_width=True, key="rebuild_packages"):
+            apply_review(result, reviewed_rows)
+            try:
+                with st.spinner("正在按人工保留项和标签重建素材包……"):
+                    package_root = Path(result.artifacts["analysis_json"]).parent / "packages-reviewed"
+                    packages = MaterialPackager(PackageConfig(
+                        merge_threshold=package_merge_threshold,
+                        max_package_seconds=float(max_package_seconds),
+                        export_media=True,
+                    )).build(
+                        Path(result.source_path), result.segments, package_root
+                    )
+                result.packages = [item.to_dict() for item in packages]
+                result.artifacts["packages"] = str(package_root)
+                result.artifacts["package_manifest"] = str(package_root / "package_manifest.json")
+                result.artifacts["packages_archive"] = str(package_root.with_suffix(".zip"))
+                write_json(Path(st.session_state["analysis_result_path"]), result.to_dict())
+                st.success(f"已按人工标注重建 {len(packages)} 个素材包，请刷新页面查看。")
+            except Exception as exc:
+                st.exception(exc)
 
     selection_video = st.session_state.get("selection_video")
     if selection_video and Path(selection_video).exists():
@@ -297,13 +362,20 @@ if result:
         )
 
     st.subheader("4. 下载分析资产")
-    download_columns = st.columns(4)
+    package_downloads = int(bool(result.artifacts.get("package_manifest"))) + int(
+        bool(result.artifacts.get("packages_archive"))
+    )
+    download_columns = st.columns(4 + package_downloads)
     downloads = [
         ("分析 JSON", result.artifacts["analysis_json"], "application/json"),
         ("片段 CSV", result.artifacts["segments_csv"], "text/csv"),
         ("语音字幕 SRT", result.artifacts["transcript_srt"], "text/plain"),
         ("音频时间窗 JSON", result.artifacts["audio_timeline"], "application/json"),
     ]
+    if result.artifacts.get("package_manifest"):
+        downloads.append(("素材包总清单", result.artifacts["package_manifest"], "application/json"))
+    if result.artifacts.get("packages_archive"):
+        downloads.append(("全部素材包 ZIP", result.artifacts["packages_archive"], "application/zip"))
     for column, (label, path_value, mime) in zip(download_columns, downloads):
         path = Path(path_value)
         with column:

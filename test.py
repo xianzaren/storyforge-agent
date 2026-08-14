@@ -355,6 +355,8 @@ def analysis_acceptance(result_dir: Path) -> dict[str, Any]:
             audio_change_threshold=0.45,
             emotion_persistence_windows=2,
             transcribe=True,
+            build_material_packages=True,
+            export_package_media=True,
         ),
         media_tool=MediaAnalysisTool(deterministic_transcriber),
     ).run(source, language="en")
@@ -382,6 +384,17 @@ def analysis_acceptance(result_dir: Path) -> dict[str, Any]:
     required = [Path(value) for value in result.artifacts.values()]
     if any(not path.exists() for path in required) or not selection.exists():
         raise RuntimeError("Analysis or selected-clip artifacts are missing")
+    package_manifest = Path(result.artifacts.get("package_manifest", ""))
+    if not package_manifest.exists() or not result.packages:
+        raise RuntimeError("Material package manifest or package records are missing")
+    if not Path(result.artifacts.get("packages_archive", "")).exists():
+        raise RuntimeError("Downloadable material package archive is missing")
+    for package in result.packages:
+        for field in ["preview_path", "contact_sheet_path", "subtitle_path"]:
+            if not Path(package[field]).exists():
+                raise RuntimeError(f"Material package artifact is missing: {field}")
+        if not package["clip_paths"] or any(not Path(path).exists() for path in package["clip_paths"]):
+            raise RuntimeError("Material package clips are missing")
     details = {
         "analysis_id": result.analysis_id,
         "analysis_json": result.artifacts["analysis_json"],
@@ -391,6 +404,8 @@ def analysis_acceptance(result_dir: Path) -> dict[str, Any]:
         "transcription_provider": result.transcription_provider,
         "audio_windows": len(audio_timeline["windows"]),
         "audio_emotion_boundaries": len(audio_timeline["emotion_boundaries"]),
+        "material_packages": len(result.packages),
+        "package_manifest": str(package_manifest),
     }
     (result_dir / "analysis_acceptance.json").write_text(
         json.dumps(details, ensure_ascii=False, indent=2), encoding="utf-8"

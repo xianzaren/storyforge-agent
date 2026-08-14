@@ -25,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--emotion-persistence-windows", type=int, default=2)
     parser.add_argument("--export-clips", action="store_true")
     parser.add_argument("--vision", action="store_true", help="Use configured OpenAI-compatible vision model")
+    parser.add_argument("--no-packages", action="store_true", help="Do not build material package folders")
+    parser.add_argument("--package-merge-threshold", type=float, default=0.45)
+    parser.add_argument("--max-package-seconds", type=float, default=30.0)
     return parser
 
 
@@ -42,6 +45,9 @@ def main() -> int:
         audio_hop_seconds=args.audio_hop,
         audio_change_threshold=args.audio_change_threshold,
         emotion_persistence_windows=args.emotion_persistence_windows,
+        build_material_packages=not args.no_packages,
+        package_merge_threshold=args.package_merge_threshold,
+        max_package_seconds=args.max_package_seconds,
     )
     agent = VideoAnalysisAgent(
         config,

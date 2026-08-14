@@ -16,6 +16,7 @@ from PIL import Image
 
 from .audio_features import AudioFeatureTool, BoundaryCandidate
 from .media import MediaAnalysisTool, TranscriptNLPTool, TranscriptSegment
+from .packager import MaterialPackager, PackageConfig
 from .utils import require_binary, run_command, seconds_to_srt, slugify, write_json
 
 
@@ -34,6 +35,10 @@ class AnalysisConfig:
     audio_change_threshold: float = 0.45
     emotion_persistence_windows: int = 2
     boundary_merge_seconds: float = 1.0
+    build_material_packages: bool = False
+    package_merge_threshold: float = 0.45
+    max_package_seconds: float = 30.0
+    export_package_media: bool = True
 
 
 @dataclass
@@ -82,6 +87,7 @@ class VideoAnalysisResult:
     segments: list[SegmentAnnotation]
     artifacts: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    packages: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -264,6 +270,22 @@ class VideoAnalysisAgent:
         self._cluster_segments(segments, features)
         self._annotate_emotions(segments)
         self._write_outputs(run_dir, video_path, transcript_segments, segments, audio_windows, audio_candidates)
+        packages: list[dict] = []
+        if self.config.build_material_packages and segments:
+            try:
+                built = MaterialPackager(PackageConfig(
+                    merge_threshold=self.config.package_merge_threshold,
+                    max_package_seconds=self.config.max_package_seconds,
+                    export_media=self.config.export_package_media,
+                )).build(video_path, segments, run_dir / "packages")
+                packages = [item.to_dict() for item in built]
+                self._event(events_path, "material_packages_created", {
+                    "package_count": len(packages),
+                    "similar_group_count": len({item["similar_group_id"] for item in packages}),
+                })
+            except Exception as exc:
+                warnings.append(f"Material package export unavailable: {type(exc).__name__}: {exc}")
+                self._event(events_path, "material_packages_fallback", {"reason": warnings[-1]})
         artifacts = {
             "analysis_json": str(run_dir / "analysis.json"),
             "segments_csv": str(run_dir / "segments.csv"),
@@ -272,6 +294,11 @@ class VideoAnalysisAgent:
             "events": str(events_path),
             "thumbnails": str(thumbnails_dir),
         }
+        if packages:
+            artifacts["packages"] = str(run_dir / "packages")
+            artifacts["package_manifest"] = str(run_dir / "packages" / "package_manifest.json")
+            if self.config.export_package_media:
+                artifacts["packages_archive"] = str(run_dir / "packages.zip")
         if self.config.export_clips:
             artifacts["clips"] = str(clips_dir)
         result = VideoAnalysisResult(
@@ -287,6 +314,7 @@ class VideoAnalysisAgent:
             segments=segments,
             artifacts=artifacts,
             warnings=warnings,
+            packages=packages,
         )
         write_json(run_dir / "analysis.json", result.to_dict())
         (run_dir / "analysis_audio.wav").unlink(missing_ok=True)
